@@ -1,0 +1,37 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+
+# Step 1: Load the Data
+data = pd.read_csv('d:\\Mdel Trained\\test_cleaned_with_features.csv')
+
+# Step 2: Data Preparation
+# Handle missing values (example: fill with mode for categorical, mean for numerical)
+data['Gender'].fillna(data['Gender'].mode()[0], inplace=True)
+data['Married'].fillna(data['Married'].mode()[0], inplace=True)
+# ... handle other missing values as needed
+
+# Step 3: Feature Encoding
+X = data.drop('Loan_Status', axis=1)
+y = data['Loan_Status']
+
+# One-hot encoding for categorical features
+X = pd.get_dummies(X, drop_first=True)
+
+# Step 4: Split the Data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Step 5: Choose and Train the Model
+model = LogisticRegression()
+model.fit(X_train, y_train)
+
+# Step 6: Evaluate the Model
+y_pred = model.predict(X_test)
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print(classification_report(y_test, y_pred))
+
+# Step 8: Save the Model
+import joblib
+joblib.dump(model, 'loan_model.pkl')

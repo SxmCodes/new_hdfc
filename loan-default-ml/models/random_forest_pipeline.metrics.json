@@ -1,0 +1,24 @@
+{
+  "best_cv_score": 0.5788533771479163,
+  "best_params": {
+    "clf__n_estimators": 300,
+    "clf__min_samples_split": 10,
+    "clf__max_features": "log2",
+    "clf__max_depth": 9,
+    "clf__class_weight": null
+  },
+  "test_accuracy": 0.581081081081081,
+  "confusion_matrix": [
+    [
+      2,
+      16
+    ],
+    [
+      15,
+      41
+    ]
+  ],
+  "classification_report": "              precision    recall  f1-score   support\n\n           0     0.1176    0.1111    0.1143        18\n           1     0.7193    0.7321    0.7257        56\n\n    accuracy                         0.5811        74\n   macro avg     0.4185    0.4216    0.4200        74\nweighted avg     0.5730    0.5811    0.5770        74\n",
+  "roc_auc": 0.5148809523809524,
+  "pr_auc": 0.7951147446824078
+}

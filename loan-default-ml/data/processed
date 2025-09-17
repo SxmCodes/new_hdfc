@@ -1,0 +1,249 @@
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import joblib
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.model_selection import RandomizedSearchCV, train_test_split, StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+	classification_report,
+	accuracy_score,
+	confusion_matrix,
+	roc_auc_score,
+	precision_recall_curve,
+	auc,
+)
+
+
+def build_preprocessor(num_cols, cat_cols):
+	num_pipe = Pipeline([
+		("imputer", SimpleImputer(strategy="median")),
+		("scaler", StandardScaler()),
+	])
+
+	# OneHotEncoder has different parameter names across sklearn versions (sparse vs sparse_output)
+	def make_ohe():
+		try:
+			return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+		except TypeError:
+			return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
+	cat_pipe = Pipeline([
+		("imputer", SimpleImputer(strategy="most_frequent")),
+		("ohe", make_ohe()),
+	])
+
+	transformers = []
+	if num_cols:
+		transformers.append(("num", num_pipe, num_cols))
+	if cat_cols:
+		transformers.append(("cat", cat_pipe, cat_cols))
+
+	if not transformers:
+		# no-op transformer
+		preprocessor = 'passthrough'
+	else:
+		preprocessor = ColumnTransformer(transformers)
+
+	return preprocessor
+
+
+def try_import_smote():
+	try:
+		from imblearn.over_sampling import SMOTE
+		from imblearn.pipeline import Pipeline as ImbPipeline
+
+		return SMOTE, ImbPipeline
+	except Exception:
+		return None, None
+
+
+def main():
+	# Paths and I/O
+	raw_path = Path(r"d:/Mdel Trained/test_cleaned_with_features.csv")
+	out_model = Path(r"d:/Mdel Trained/loan-default-ml/models/random_forest_pipeline.joblib")
+	out_metrics = out_model.with_suffix(".metrics.json")
+	out_dir = out_model.parent
+	out_dir.mkdir(parents=True, exist_ok=True)
+
+	df = pd.read_csv(raw_path)
+
+	# Basic target mapping
+	if 'Loan_Status' not in df.columns:
+		raise ValueError('Expected Loan_Status column in CSV')
+	df = df.copy()
+	df['Loan_Status'] = df['Loan_Status'].map({'Y': 1, 'N': 0})
+
+	# Drop identifier
+	if 'Loan_ID' in df.columns:
+		df = df.drop(columns=['Loan_ID'])
+
+	# Quick leakage detection: drop any feature that perfectly predicts the target
+	leak_cols = []
+	for col in df.drop(columns=['Loan_Status']).columns:
+		try:
+			# For each unique value of col, map to the majority target for that value
+			mapping = df.groupby(col)['Loan_Status'].agg(lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0])
+			mapped = df[col].map(mapping)
+			# map 'Y'/'N' to 1/0 if needed
+			mapped_bin = mapped.map({'Y': 1, 'N': 0}).fillna(mapped)
+			true_bin = df['Loan_Status'].map({'Y': 1, 'N': 0}).fillna(df['Loan_Status'])
+			# Compare exact equality
+			if mapped_bin.astype(str).equals(true_bin.astype(str)):
+				leak_cols.append(col)
+		except Exception:
+			# ignore columns that can't be grouped
+			continue
+
+	if leak_cols:
+		print('Dropping leaking columns:', leak_cols)
+		df = df.drop(columns=leak_cols)
+
+	# Feature lists
+	y = df['Loan_Status']
+	X = df.drop(columns=['Loan_Status'])
+
+	# Auto-detect numeric and categorical
+	num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+	cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
+
+	# Ensure deterministic split with stratify
+	X_train, X_test, y_train, y_test = train_test_split(
+		X, y, test_size=0.2, random_state=42, stratify=y
+	)
+
+	preprocessor = build_preprocessor(num_cols, cat_cols)
+
+	SMOTE, ImbPipeline = try_import_smote()
+	use_smote = SMOTE is not None
+
+	# Base classifier
+	clf = RandomForestClassifier(random_state=42, n_jobs=-1)
+
+	if use_smote:
+		# Pipeline with SMOTE (resample after preprocessing)
+		pipe = ImbPipeline([
+			("preproc", preprocessor),
+			("smote", SMOTE(random_state=42)),
+			("clf", clf),
+		])
+	else:
+		# Pipeline without SMOTE; we'll use class_weight in param grid
+		pipe = Pipeline([
+			("preproc", preprocessor),
+			("clf", clf),
+		])
+
+	# Hyperparameter distributions for RandomizedSearchCV
+	param_dist = {
+		'clf__n_estimators': [100, 200, 300, 400],
+		'clf__max_depth': [None, 6, 9, 12],
+		'clf__max_features': ['sqrt', 'log2', 0.6, 0.8],
+		'clf__min_samples_split': [2, 5, 10],
+	}
+
+	if use_smote:
+		# class_weight irrelevant when using SMOTE, but keep option
+		param_dist['clf__class_weight'] = [None, 'balanced']
+	else:
+		# encourage classifier to use balanced class weights
+		param_dist['clf__class_weight'] = [None, 'balanced']
+
+	cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+	rnd = RandomizedSearchCV(
+		pipe,
+		param_distributions=param_dist,
+		n_iter=20,
+		scoring='f1_macro',
+		n_jobs=-1,
+		cv=cv,
+		random_state=42,
+		verbose=1,
+	)
+
+	print('Starting RandomizedSearchCV (this may take several minutes)...')
+	rnd.fit(X_train, y_train)
+
+	print('Best CV score:', rnd.best_score_)
+	print('Best params:', rnd.best_params_)
+
+	best = rnd.best_estimator_
+
+	# Evaluate on test set
+	y_pred = best.predict(X_test)
+	y_proba = best.predict_proba(X_test)[:, 1]
+
+	acc = accuracy_score(y_test, y_pred)
+	clf_report = classification_report(y_test, y_pred, digits=4)
+	cm = confusion_matrix(y_test, y_pred).tolist()
+
+	try:
+		roc_auc = float(roc_auc_score(y_test, y_proba))
+	except Exception:
+		roc_auc = None
+
+	precision, recall, _ = precision_recall_curve(y_test, y_proba)
+	pr_auc = float(auc(recall, precision))
+
+	print('\nTest accuracy:', acc)
+	print('\nClassification report:\n', clf_report)
+	print('\nConfusion matrix:\n', cm)
+	print('\nROC AUC:', roc_auc)
+	print('PR AUC:', pr_auc)
+
+	metrics = {
+		'best_cv_score': float(rnd.best_score_),
+		'best_params': {k: (str(v) if not isinstance(v, (int, float, type(None))) else v) for k, v in rnd.best_params_.items()},
+		'test_accuracy': float(acc),
+		'confusion_matrix': cm,
+		'classification_report': clf_report,
+		'roc_auc': roc_auc,
+		'pr_auc': pr_auc,
+	}
+
+	with open(out_metrics, 'w') as f:
+		json.dump(metrics, f, indent=2)
+
+	# save model
+	joblib.dump(best, out_model)
+	print(f'Saved trained pipeline to {out_model}')
+
+	# Save ROC and PR plots
+	try:
+		# Import plotting libraries lazily so script still works if matplotlib is unavailable
+		import matplotlib.pyplot as plt
+		from sklearn.metrics import roc_curve
+
+		plt.figure()
+		fpr, tpr, _ = roc_curve(y_test, y_proba)
+		plt.plot(fpr, tpr, label=f'ROC AUC = {roc_auc:.3f}')
+		plt.plot([0, 1], [0, 1], '--', color='gray')
+		plt.xlabel('FPR')
+		plt.ylabel('TPR')
+		plt.title('ROC curve')
+		plt.legend()
+		plt.grid(True)
+		plt.savefig(out_dir / 'roc_curve.png')
+
+		plt.figure()
+		plt.plot(recall, precision, label=f'PR AUC = {pr_auc:.3f}')
+		plt.xlabel('Recall')
+		plt.ylabel('Precision')
+		plt.title('Precision-Recall curve')
+		plt.legend()
+		plt.grid(True)
+		plt.savefig(out_dir / 'pr_curve.png')
+		print(f'Saved ROC and PR plots to {out_dir}')
+	except Exception:
+		print('matplotlib not available or plotting failed; skipping plot generation')
+		pass
+
+
+if __name__ == '__main__':
+	main()
