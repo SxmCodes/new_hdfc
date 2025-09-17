@@ -18,10 +18,6 @@ LABELED_OUT = Path("test_Y3wMUE5_7gLdaTN_labeled.csv")
 TARGET_LABEL = "Loan_Status"  # Target column for loan approval status (auto-generated if missing)
 
 def generate_demo_target(dataframe):
-    """
-    Create a synthetic target column for loan approval using simple heuristics.
-    Numeric columns are coerced, dependents are standardized, and a rule-based target is generated.
-    """
     for col in ["ApplicantIncome", "CoapplicantIncome", "LoanAmount", "Loan_Amount_Term", "Credit_History"]:
         if col in dataframe.columns:
             dataframe[col] = pd.to_numeric(dataframe[col], errors="coerce")
@@ -65,9 +61,7 @@ def load_and_label_data(filepath):
     return df
 
 def remove_duplicates_and_coerce(df):
-    """
-    Remove duplicate rows and coerce numeric columns. Standardize dependents column.
-    """
+
     df = df.drop_duplicates()
     for col in ["ApplicantIncome", "CoapplicantIncome", "LoanAmount", "Loan_Amount_Term", "Credit_History"]:
         if col in df.columns:
@@ -112,9 +106,7 @@ def get_onehot_encoder():
             return OneHotEncoder(handle_unknown="ignore")
 
 def train_and_save_model(df):
-    """
-    Build preprocessing pipeline, train RandomForest model, evaluate, and save outputs.
-    """
+ 
     if TARGET_LABEL not in df.columns:
         print(f"ERROR: target column '{TARGET_LABEL}' missing after preprocessing.")
         sys.exit(1)
@@ -176,4 +168,5 @@ def main():
     train_and_save_model(df)
 
 if __name__ == "__main__":
+
     main()
